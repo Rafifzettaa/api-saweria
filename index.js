@@ -5,11 +5,12 @@ import QRCode from "qrcode";
 
 const app = express();
 const port = process.env.PORT || 3000;
+const host = "0.0.0.0"; // Bind to all interfaces
 
 // Middleware
 app.use(bodyParser.json());
 
-// Add CORS middleware for Vercel
+// Add CORS middleware
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
@@ -30,40 +31,46 @@ app.get("/", (req, res) => {
   res.json({
     message: "Saweria API is running!",
     version: "1.0.0",
+    server_info: {
+      host: host,
+      port: port,
+      environment: process.env.NODE_ENV || "development",
+      timestamp: new Date().toISOString(),
+    },
     endpoints: {
       "POST /qris": "Generate QRIS payment",
       "GET /status/:donationId": "Check payment status",
       "GET /balance": "Check account balance",
+    },
+    usage_examples: {
+      qris: `curl -X POST http://localhost:${port}/qris -H "Content-Type: application/json" -d '{"amount": 10000, "userId": "your-user-id"}'`,
+      status: `curl http://localhost:${port}/status/donation-id`,
+      balance: `curl "http://localhost:${port}/balance?token=your-token"`,
     },
   });
 });
 
 /**
  * Generate QRIS payment
- * @param {number} amount - Donation amount in IDR
- * @param {string} userId - Saweria user ID
- * @returns {object} QRIS data including QR code image
  */
 async function generateQRIS(amount, userId) {
   const API_URL_QRIS = `https://backend.saweria.co/donations/${userId}`;
 
   try {
+    console.log(
+      `[${new Date().toISOString()}] Attempting to generate QRIS for user: ${userId}, amount: ${amount}`
+    );
+
     const response = await fetch(API_URL_QRIS, {
       method: "POST",
       headers: {
-        Host: "backend.saweria.co",
-        Accept: "*/*",
-        "Sec-Fetch-Site": "same-site",
-        Origin: "https://saweria.co",
-        "Sec-Fetch-Mode": "cors",
-        "User-Agent":
-          "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Mobile/15E148 Safari/604.1",
-        Referer: "https://saweria.co/",
-        "Sec-Fetch-Dest": "empty",
-        "Accept-Language": "id-ID,id;q=0.9",
-        Priority: "u=3, i",
-        Connection: "keep-alive",
+        Accept: "application/json, text/plain, */*",
+        "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
         "Content-Type": "application/json",
+        Origin: "https://saweria.co",
+        Referer: "https://saweria.co/",
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       },
       body: JSON.stringify({
         agree: true,
@@ -81,11 +88,43 @@ async function generateQRIS(amount, userId) {
       }),
     });
 
+    console.log(
+      `[${new Date().toISOString()}] Response status: ${response.status}`
+    );
+
+    // Check if response is actually JSON
+    const contentType = response.headers.get("content-type");
+    if (!contentType || !contentType.includes("application/json")) {
+      const textResponse = await response.text();
+      console.error(
+        `[${new Date().toISOString()}] Non-JSON response:`,
+        textResponse.substring(0, 500)
+      );
+
+      // Check for Cloudflare protection
+      if (
+        textResponse.includes("cloudflare") ||
+        textResponse.includes("cf-ray")
+      ) {
+        throw new Error(
+          "Cloudflare protection detected. Try using VPS with Indonesian IP or wait a few minutes."
+        );
+      }
+
+      if (textResponse.includes("<!DOCTYPE")) {
+        throw new Error(
+          "Saweria returned HTML page. User ID might be invalid."
+        );
+      }
+
+      throw new Error(`API returned non-JSON response: ${response.status}`);
+    }
+
     const result = await response.json();
-    console.log("QRIS Response:", JSON.stringify(result, null, 2));
+    console.log(`[${new Date().toISOString()}] Success response received`);
 
     if (result.data?.qr_string) {
-      // Generate QR code image as data URL
+      // Generate QR code image
       const qrImageData = await QRCode.toDataURL(result.data.qr_string, {
         errorCorrectionLevel: "H",
         type: "image/png",
@@ -96,25 +135,24 @@ async function generateQRIS(amount, userId) {
         success: true,
         data: {
           ...result.data,
-          qr_image: qrImageData, // Add QR code image to response
+          qr_image: qrImageData,
         },
       };
     } else {
-      throw new Error("Failed to generate QRIS: No QR string in response");
+      throw new Error("No QR string in response");
     }
   } catch (error) {
-    console.error("Error in generateQRIS:", error.message);
+    console.error(`[${new Date().toISOString()}] Error:`, error.message);
     return {
       success: false,
       error: error.message,
+      timestamp: new Date().toISOString(),
     };
   }
 }
 
 /**
- * Check payment status by donation ID
- * @param {string} donationId - Donation ID to check
- * @returns {object} Payment status information
+ * Check payment status
  */
 async function checkPaymentStatus(donationId) {
   const API_URL_CHECK_STATUS = `https://backend.saweria.co/donations/qris/${donationId}`;
@@ -123,24 +161,16 @@ async function checkPaymentStatus(donationId) {
     const response = await fetch(API_URL_CHECK_STATUS, {
       method: "GET",
       headers: {
-        Host: "backend.saweria.co",
-        Accept: "*/*",
-        "Sec-Fetch-Site": "same-site",
-        Origin: "https://saweria.co",
-        "Sec-Fetch-Mode": "cors",
-        "User-Agent":
-          "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Mobile/15E148 Safari/604.1",
-        Referer: "https://saweria.co/",
-        "Sec-Fetch-Dest": "empty",
-        "Accept-Language": "id-ID,id;q=0.9",
-        Priority: "u=3, i",
-        Connection: "keep-alive",
+        Accept: "application/json",
         "Content-Type": "application/json",
+        Origin: "https://saweria.co",
+        Referer: "https://saweria.co/",
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
       },
     });
 
     const result = await response.json();
-    console.log("Status Response:", JSON.stringify(result, null, 2));
 
     if (result.data) {
       return {
@@ -152,7 +182,6 @@ async function checkPaymentStatus(donationId) {
       throw new Error("Invalid response structure");
     }
   } catch (error) {
-    console.error("Error in checkPaymentStatus:", error.message);
     return {
       success: false,
       error: error.message,
@@ -161,9 +190,7 @@ async function checkPaymentStatus(donationId) {
 }
 
 /**
- * Check account balance using bearer token
- * @param {string} token - Bearer token for authentication
- * @returns {object} Balance information
+ * Check account balance
  */
 async function checkAccountBalance(token) {
   const API_URL_BALANCE = "https://backend.saweria.co/donations/balance";
@@ -172,24 +199,16 @@ async function checkAccountBalance(token) {
     const response = await fetch(API_URL_BALANCE, {
       method: "GET",
       headers: {
-        Host: "backend.saweria.co",
-        Accept: "*/*",
-        "Sec-Fetch-Site": "same-site",
+        Accept: "application/json",
         Origin: "https://saweria.co",
-        "Sec-Fetch-Mode": "cors",
-        "User-Agent":
-          "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Mobile/15E148 Safari/604.1",
         Referer: "https://saweria.co/",
-        "Sec-Fetch-Dest": "empty",
-        "Accept-Language": "id-ID,id;q=0.9",
-        Priority: "u=3, i",
-        Connection: "keep-alive",
-        Authorization: token,
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        Authorization: `Bearer ${token}`,
       },
     });
 
     const result = await response.json();
-    console.log("Balance Response:", JSON.stringify(result, null, 2));
 
     if (result.data) {
       return {
@@ -200,7 +219,6 @@ async function checkAccountBalance(token) {
       throw new Error("Failed to fetch balance");
     }
   } catch (error) {
-    console.error("Error in checkAccountBalance:", error.message);
     return {
       success: false,
       error: error.message,
@@ -209,14 +227,6 @@ async function checkAccountBalance(token) {
 }
 
 // API Endpoints
-
-/**
- * @route POST /qris
- * @description Generate QRIS payment
- * @param {number} amount - Donation amount in IDR
- * @param {string} userId - Saweria user ID
- * @returns {object} QRIS data including QR code image
- */
 app.post("/qris", async (req, res) => {
   const { amount, userId } = req.body;
 
@@ -231,24 +241,12 @@ app.post("/qris", async (req, res) => {
   res.status(result.success ? 200 : 400).json(result);
 });
 
-/**
- * @route GET /status/:donationId
- * @description Check payment status by donation ID
- * @param {string} donationId - Donation ID to check
- * @returns {object} Payment status information
- */
 app.get("/status/:donationId", async (req, res) => {
   const { donationId } = req.params;
   const result = await checkPaymentStatus(donationId);
   res.status(result.success ? 200 : 400).json(result);
 });
 
-/**
- * @route GET /balacne
- * @description Check Balacne With Auth Token
- * @query {string} token - its Bearer Token without (bearer)
- * @returns {object} Payment status information
- */
 app.get("/balance", async (req, res) => {
   const { token } = req.query;
 
@@ -264,9 +262,17 @@ app.get("/balance", async (req, res) => {
 });
 
 // Start server
-app.listen(port, () => {
-  console.log(`Saweria API service running at http://localhost:${port}`);
+app.listen(port, host, () => {
+  console.log(`\n🚀 Saweria API service running!`);
+  console.log(`📍 Host: ${host}:${port}`);
+  console.log(`🌐 Access: http://localhost:${port}`);
+  console.log(`🌐 Network: http://[YOUR_SERVER_IP]:${port}`);
+  console.log(`\n📋 API Endpoints:`);
+  console.log(`   GET  /        - Health check`);
+  console.log(`   POST /qris    - Generate QRIS`);
+  console.log(`   GET  /status/:id - Check status`);
+  console.log(`   GET  /balance - Check balance`);
+  console.log(`\n⚡ Ready to accept connections!\n`);
 });
 
-// Export for Vercel
 export default app;
